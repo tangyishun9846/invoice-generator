@@ -1,0 +1,18 @@
+# 排除业务数据 / 大文件 / 生成产物
+*.pdf
+*.doc
+*.docx
+*.png
+*.jpg
+*.jpeg
+DLN*/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.venv
+venv/
+*.log
+auto_invoice.py
+build_invoice.py
+发票生成器.html
