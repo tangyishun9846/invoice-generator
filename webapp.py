@@ -17,7 +17,7 @@ from datetime import datetime
 
 from flask import Flask, request, send_file, render_template_string, jsonify
 
-from invoice_core import extract_data, render_pdf
+from invoice_core import extract_data, render_pdf, DEFAULT_INVOICE_NO
 
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -163,7 +163,7 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Micros
         <h2 class="section-title">⚙️ 第三步：发票号</h2>
         <div class="options">
           <label for="invoice_no">Invoice No.</label>
-          <input type="text" id="invoice_no" name="invoice_no" value="RFDX-250711">
+          <input type="text" id="invoice_no" name="invoice_no" value="{{ default_invoice_no }}">
         </div>
       </div>
 
@@ -401,7 +401,7 @@ def _cleanup(tmp_dir: Path):
 
 @app.route("/")
 def index():
-    return render_template_string(PAGE)
+    return render_template_string(PAGE, default_invoice_no=DEFAULT_INVOICE_NO)
 
 
 @app.route("/extract", methods=["POST"])
@@ -409,7 +409,7 @@ def extract():
     tmp = None
     try:
         tmp, paths = _save_uploads(request)
-        invoice_no = (request.form.get("invoice_no") or "RFDX-250711").strip()
+        invoice_no = (request.form.get("invoice_no") or DEFAULT_INVOICE_NO).strip()
         data = extract_data(paths["pi"], paths["license"], paths["booking"], invoice_no=invoice_no)
         try:
             qty = float(data.get("quantity_mt") or 0)
@@ -430,7 +430,7 @@ def generate():
     tmp = None
     try:
         tmp, paths = _save_uploads(request)
-        invoice_no = (request.form.get("invoice_no") or "RFDX-250711").strip()
+        invoice_no = (request.form.get("invoice_no") or DEFAULT_INVOICE_NO).strip()
         data = extract_data(paths["pi"], paths["license"], paths["booking"], invoice_no=invoice_no)
         today = datetime.now().strftime("%Y%m%d")
         out_pdf = tmp / f"商业发票_{invoice_no}_修改于{today}.pdf"

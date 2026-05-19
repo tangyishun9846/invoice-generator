@@ -37,3 +37,9 @@ DLN*/
 .env
 .env.local
 .env.*.local
+
+# 内部开发笔记 (含历史决策、用户偏好等, 不进公开仓库)
+PROJECT_STATE.md
+
+# 早期手工 HTML 编辑器 (含硬编码客户/合同数据, 不进公开仓库)
+发票生成器.html

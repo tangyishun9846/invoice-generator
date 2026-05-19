@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""商业发票生成核心模块: PDF -> 数据 -> HTML -> PDF"""
+"""商业发票生成核心模块: PDF -> 数据 -> HTML -> PDF
+
+发货人公司信息和默认值通过环境变量配置, 详见 .env.example
+"""
 import os
 import re
 import base64
@@ -11,8 +14,45 @@ from datetime import datetime
 import fitz  # PyMuPDF
 
 
+# ============== 配置 (从环境变量读取, 缺省时用占位值) ==============
+
+def _split_lines(raw: str) -> list:
+    """把 | 分隔的字符串拆成多行, 兼容字面 \\n"""
+    if not raw:
+        return []
+    raw = raw.replace("\\n", "|")
+    return [l.strip() for l in raw.split("|") if l.strip()]
+
+
+SELLER_NAME = os.environ.get("SELLER_NAME", "YOUR COMPANY NAME CO.,LTD")
+SELLER_ADDRESS_LINES = _split_lines(os.environ.get(
+    "SELLER_ADDRESS_LINES",
+    "ROOM 101, BUILDING A,|123 MAIN STREET, DISTRICT,|CITY, COUNTRY"
+))
+# PI 文本里发货人地址结尾的锚点 (用来跳过发货人段, 定位收货人块)
+SELLER_ANCHOR = os.environ.get("SELLER_ANCHOR", "CITY, COUNTRY")
+
+DEFAULT_INVOICE_NO = os.environ.get("DEFAULT_INVOICE_NO", "INV-001")
+DEFAULT_GOODS_NAME = os.environ.get("DEFAULT_GOODS_NAME", "")
+DEFAULT_GOODS_BRAND = os.environ.get("DEFAULT_GOODS_BRAND", "")
+DEFAULT_HS_CODE = os.environ.get("DEFAULT_HS_CODE", "")
+DEFAULT_PORT_LOADING = os.environ.get("DEFAULT_PORT_LOADING", "")
+DEFAULT_PORT_DISCHARGE = os.environ.get("DEFAULT_PORT_DISCHARGE", "")
+DEFAULT_DISCHARGE_COUNTRY = os.environ.get("DEFAULT_DISCHARGE_COUNTRY", "")
+
+# 可选: PI 里货物名识别正则, 用户可针对自己常用货物定制
+GOODS_NAME_PATTERN = os.environ.get(
+    "GOODS_NAME_PATTERN",
+    r"(SODIUM\s+SULPHIDE\s+FLAKES[^\n]*)"  # 兼容旧版默认; 可改成你的货物
+)
+
+
 def _find_chrome() -> str:
-    """按优先级查找 Chrome 可执行文件: 环境变量 -> 常见路径 -> PATH"""
+    """按优先级查找 Chrome 可执行文件: 环境变量 -> 常见路径 -> PATH
+
+    找不到时返回 None, 让模块仍可被 import (例如在没装 Chrome 的 CI 跑测试).
+    实际调用 render_pdf 时若仍为 None 会报错.
+    """
     env = os.environ.get("CHROME_BIN") or os.environ.get("GOOGLE_CHROME_BIN")
     if env and Path(env).exists():
         return env
@@ -26,9 +66,7 @@ def _find_chrome() -> str:
     for c in candidates:
         if Path(c).exists():
             return c
-    if which := shutil.which("google-chrome") or shutil.which("chromium"):
-        return which
-    raise RuntimeError("找不到 Chrome 可执行文件, 请设置环境变量 CHROME_BIN")
+    return shutil.which("google-chrome") or shutil.which("chromium")
 
 
 CHROME = _find_chrome()
@@ -77,13 +115,13 @@ def parse_pi(text: str, consignee_hint: str = "") -> dict:
             block = after[:cut] if cut > 0 else after[:500]
 
     if not block:
-        # 通用回退: 找 "To:" 和 "INCOTERMS" 之间的内容, 跳过发货人 (TIANJIN, CHINA 之后)
+        # 通用回退: 找 "To:" 和 "INCOTERMS" 之间的内容, 跳过发货人 (anchor 之后)
         if "INCOTERMS" in text:
             before_inco = text[:text.find("INCOTERMS")]
-            # 找发货人地址结束的标志 "TIANJIN, CHINA"
-            sender_end = before_inco.rfind("TIANJIN, CHINA")
+            # 用 SELLER_ANCHOR (默认你公司地址末尾) 作为发货人段结束的标志
+            sender_end = before_inco.rfind(SELLER_ANCHOR) if SELLER_ANCHOR else -1
             if sender_end >= 0:
-                block = before_inco[sender_end + len("TIANJIN, CHINA"):]
+                block = before_inco[sender_end + len(SELLER_ANCHOR):]
             else:
                 # 退一步: 用 To: 作为起点
                 to_pos = before_inco.find("To:")
@@ -111,12 +149,13 @@ def parse_pi(text: str, consignee_hint: str = "") -> dict:
         d["pi_qty_num"] = m.group(1)
         d["pi_qty_unit"] = m.group(2).upper()
 
-    if m := re.search(r"(SODIUM\s+SULPHIDE\s+FLAKES[^\n]*)", text):
+    if m := re.search(GOODS_NAME_PATTERN, text):
         d["goods_name"] = m.group(1).strip()
-    if m := re.search(r"\((SINGHORN\s+BRAND)\)", text):
+    # 品牌识别: 找 "(XXX BRAND)" 模式; 没有就用环境默认
+    if m := re.search(r"\(([A-Z][A-Z\s]*?BRAND)\)", text):
         d["goods_brand"] = f"({m.group(1)})"
-    else:
-        d["goods_brand"] = "(SINGHORN BRAND)"
+    elif DEFAULT_GOODS_BRAND:
+        d["goods_brand"] = DEFAULT_GOODS_BRAND
     if m := re.search(r"H\.S\.\s*CODE\s*:?\s*([\d.]+)", text):
         d["hs_code"] = m.group(1).strip(".")
     return d
@@ -238,7 +277,9 @@ def build_html(d: dict, sig_b64: str, seal_b64: str) -> str:
     addr_lines = (d.get("consignee_addr") or "").split("\n")
     addr_html = "".join(f'<div class="addr">{l}</div>' for l in addr_lines if l)
 
-    discharge_country = d['port_discharge'].split(',')[-1].strip() if ',' in d['port_discharge'] else 'PAKISTAN'
+    fallback_country = DEFAULT_DISCHARGE_COUNTRY or "COUNTRY"
+    discharge_country = d['port_discharge'].split(',')[-1].strip() if ',' in d['port_discharge'] else fallback_country
+    seller_addr_html = "".join(f'<div class="addr">{l}</div>' for l in SELLER_ADDRESS_LINES)
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Commercial Invoice</title>
@@ -288,10 +329,8 @@ table.goods tr.other td {{ border:1px solid #bfbfbf; padding:6px 8px; font-size:
   <tr>
     <td rowspan="2" class="fromto">
       <div class="role">From:</div>
-      <div class="name">TIANJIN RUIFENG CHEMICAL CO.,LTD</div>
-      <div class="addr">ROOM:B-801, TEDA INTERNATIONAL CLUB,</div>
-      <div class="addr">NO.7-2 FUKANG ROAD, NANKAI DISTRICT,</div>
-      <div class="addr">TIANJIN, CHINA</div>
+      <div class="name">{SELLER_NAME}</div>
+      {seller_addr_html}
     </td>
     <td class="lbl">发票号码：<br><span class="en">Invoice No.:</span></td>
     <td class="val">{d['invoice_no']}</td>
@@ -375,7 +414,7 @@ table.goods tr.other td {{ border:1px solid #bfbfbf; padding:6px 8px; font-size:
 # ============== 高层流程 ==============
 
 def extract_data(pi_path: Path, license_path: Path, booking_path: Path,
-                 invoice_no: str = "RFDX-250711") -> dict:
+                 invoice_no: str = None) -> dict:
     """从三个 PDF 中提取数据并组装成 invoice 数据字典"""
     lic = parse_license(pdf_text(license_path))
     pi = parse_pi(pdf_text(pi_path), consignee_hint=lic.get("consignee_name", ""))
@@ -384,16 +423,20 @@ def extract_data(pi_path: Path, license_path: Path, booking_path: Path,
     today = datetime.now()
     invoice_date = today.strftime("%b,%d,%Y").upper()
 
-    loading = bk.get("port_loading", "DALIAN")
-    if "CHINA" not in loading:
+    loading = bk.get("port_loading") or DEFAULT_PORT_LOADING or ""
+    if loading and "," not in loading:
+        # 起运港若没带国家, 默认追加 CHINA
         loading = f"{loading}, CHINA"
-    discharge_full, discharge_city = format_port(bk.get("port_discharge_raw", "KARACHI PAKISTAN"))
+    discharge_raw = bk.get("port_discharge_raw") or DEFAULT_PORT_DISCHARGE or ""
+    discharge_full, discharge_city = format_port(
+        discharge_raw, default_country=DEFAULT_DISCHARGE_COUNTRY or "COUNTRY"
+    )
 
     # 收货人名优先用许可证的, 失败则用 PI 提取的回退值
     consignee_name = lic.get("consignee_name") or pi.get("consignee_name_pi") or "N/A"
 
     return {
-        "invoice_no": invoice_no,
+        "invoice_no": invoice_no or DEFAULT_INVOICE_NO,
         "invoice_date": invoice_date,
         "consignee_name": consignee_name,
         "consignee_addr": pi.get("consignee_addr", ""),
@@ -405,9 +448,9 @@ def extract_data(pi_path: Path, license_path: Path, booking_path: Path,
         "quantity_mt": lic.get("qty_mt", 0),
         "unit_price": pi.get("unit_price", "0"),
         "price_unit": pi.get("price_unit", "MT"),
-        "goods_name": pi.get("goods_name", "SODIUM SULPHIDE FLAKES 60% MIN"),
-        "goods_brand": pi.get("goods_brand", "(SINGHORN BRAND)"),
-        "hs_code": pi.get("hs_code", "2830.1010"),
+        "goods_name": pi.get("goods_name") or DEFAULT_GOODS_NAME,
+        "goods_brand": pi.get("goods_brand") or DEFAULT_GOODS_BRAND,
+        "hs_code": pi.get("hs_code") or DEFAULT_HS_CODE,
         "pi_no": pi.get("pi_no", ""),
         "pi_date": pi.get("pi_date", ""),
     }
@@ -425,6 +468,8 @@ def render_pdf(data: dict, sig_path: Path, seal_path: Path, out_pdf: Path) -> Pa
     if out_pdf.exists():
         out_pdf.unlink()
 
+    if not CHROME:
+        raise RuntimeError("找不到 Chrome 可执行文件, 请设置环境变量 CHROME_BIN")
     cmd = [CHROME, "--headless", "--disable-gpu", "--no-pdf-header-footer"]
     # Docker / 以 root 跑时 Chrome 需要 --no-sandbox
     if os.geteuid() == 0 or os.environ.get("CHROME_NO_SANDBOX"):
