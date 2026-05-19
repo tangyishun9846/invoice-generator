@@ -67,14 +67,41 @@ def parse_pi(text: str, consignee_hint: str = "") -> dict:
     if m := re.search(r"PI\s*Date\s*:?\s*([A-Z][a-z]+,\s*\d{1,2},\s*\d{4})", text):
         d["pi_date"] = m.group(1).replace(" ", "").upper()
 
+    # ---- 提取收货人块 (PI 内): 优先用 consignee_hint 定位, 否则用通用规则 ----
+    block = ""
     if consignee_hint:
         idx = text.find(consignee_hint)
         if idx >= 0:
-            after = text[idx + len(consignee_hint):]
+            after = text[idx:]  # 包含 hint 行本身
             cut = after.find("INCOTERMS")
             block = after[:cut] if cut > 0 else after[:500]
-            lines = [l.strip() for l in block.split("\n") if l.strip()]
-            d["consignee_addr"] = "\n".join(lines[:3])
+
+    if not block:
+        # 通用回退: 找 "To:" 和 "INCOTERMS" 之间的内容, 跳过发货人 (TIANJIN, CHINA 之后)
+        if "INCOTERMS" in text:
+            before_inco = text[:text.find("INCOTERMS")]
+            # 找发货人地址结束的标志 "TIANJIN, CHINA"
+            sender_end = before_inco.rfind("TIANJIN, CHINA")
+            if sender_end >= 0:
+                block = before_inco[sender_end + len("TIANJIN, CHINA"):]
+            else:
+                # 退一步: 用 To: 作为起点
+                to_pos = before_inco.find("To:")
+                if to_pos >= 0:
+                    block = before_inco[to_pos + 3:]
+
+    if block:
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        # 第一行是收货人名 (如果当时是用 hint 定位的, 它就是 hint 本身)
+        # 后续 2-3 行是地址
+        if lines:
+            if not consignee_hint:
+                # 通用模式: 第一行就是公司名
+                d["consignee_name_pi"] = lines[0]
+                d["consignee_addr"] = "\n".join(lines[1:4])
+            else:
+                # hint 模式: 第一行是 hint (已知公司名), 后续是地址
+                d["consignee_addr"] = "\n".join(lines[1:4])
 
     if m := re.search(r"USD\s*([\d,]+(?:\.\d+)?)\s*/\s*([A-Z]+)", text):
         d["unit_price"] = m.group(1).replace(",", "")
@@ -97,8 +124,22 @@ def parse_pi(text: str, consignee_hint: str = "") -> dict:
 
 def parse_license(text: str) -> dict:
     d = {}
-    if m := re.search(r"\b([A-Z][A-Z &]{2,}(?:INTERNATIONAL|ENTERPRISES|CO\.?,?\s*LTD|LIMITED|INC|CORPORATION|TRADING|GROUP))\b", text):
-        d["consignee_name"] = m.group(1).strip()
+    # 试多种公司名模式 (兼容不同 PyMuPDF 版本的文本提取差异)
+    patterns = [
+        # 经典模式: 全大写公司名 + 常见后缀
+        r"\b([A-Z][A-Z &]{2,}(?:INTERNATIONAL|ENTERPRISES|CO\.?,?\s*LTD|LIMITED|INC|CORPORATION|TRADING|GROUP))\b",
+        # 在 "11．收货人" / "Consignee" 标签后面找公司名
+        r"(?:11．收货人|11．[^\n]*收货人[^\n]*|Consignee)[\s\S]{0,80}?\n\s*([A-Z][A-Z0-9 &.,'\-]{4,})",
+        # 退一步: 任意全大写 4+ 字符且至少含 2 个单词的内容
+        r"^([A-Z][A-Z &]{3,}\s+[A-Z][A-Z &]+)$",
+    ]
+    for pat in patterns:
+        if m := re.search(pat, text, re.MULTILINE):
+            name = m.group(1).strip()
+            # 过滤掉显然不对的 (太短、含数字开头、含中文)
+            if len(name) >= 4 and not any(c.isdigit() for c in name[:3]):
+                d["consignee_name"] = name
+                break
 
     if m := re.search(r"\b(RF[A-Z]{2,3}\d{4,6})\b", text):
         d["contract_no"] = m.group(1)
@@ -348,10 +389,13 @@ def extract_data(pi_path: Path, license_path: Path, booking_path: Path,
         loading = f"{loading}, CHINA"
     discharge_full, discharge_city = format_port(bk.get("port_discharge_raw", "KARACHI PAKISTAN"))
 
+    # 收货人名优先用许可证的, 失败则用 PI 提取的回退值
+    consignee_name = lic.get("consignee_name") or pi.get("consignee_name_pi") or "N/A"
+
     return {
         "invoice_no": invoice_no,
         "invoice_date": invoice_date,
-        "consignee_name": lic.get("consignee_name", "N/A"),
+        "consignee_name": consignee_name,
         "consignee_addr": pi.get("consignee_addr", ""),
         "contract_no": lic.get("contract_no", "N/A"),
         "contract_date": lic.get("contract_date", "N/A"),
