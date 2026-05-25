@@ -383,10 +383,10 @@ table.goods tr.other td {{ border:1px solid #bfbfbf; padding:6px 8px; font-size:
 .stamp-seal {{ position:absolute; right:20px; top:5px; width:240px; }}
 .stamp-sig {{ position:absolute; right:90px; top:90px; width:95px; }}
 table.brand-header {{ width:100%; border-collapse:collapse; margin-bottom:10px; }}
-table.brand-header td {{ padding:0; vertical-align:middle; border:none; }}
+table.brand-header td {{ padding:0 0 8px 0; vertical-align:middle; border:none; border-bottom:3px double #000; }}
 .brand-logo {{ width:35%; text-align:left; }}
 .brand-logo img {{ max-height:70px; max-width:220px; }}
-.brand-name {{ width:65%; text-align:right; font-family:"Times New Roman","Songti SC",serif; font-size:15pt; font-weight:bold; letter-spacing:0.5px; color:#000; }}
+.brand-name {{ width:65%; text-align:right; font-family:Arial,"Helvetica Neue",Helvetica,sans-serif; font-size:13pt; font-weight:bold; font-style:italic; color:#000; }}
 </style></head><body>
 
 {header_html}<div class="title-en">COMMERCIAL INVOICE</div>

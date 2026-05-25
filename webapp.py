@@ -177,7 +177,7 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Micros
             <input type="text" id="nameplate_text" name="nameplate_text"
                    placeholder="留空则不显示"
                    value="{{ default_nameplate }}"
-                   style="width:100%;padding:9px 12px;border:1px solid #cbd5e0;border-radius:8px;font-size:11pt;font-family:'Times New Roman',serif;font-weight:bold;">
+                   style="width:100%;padding:9px 12px;border:1px solid #cbd5e0;border-radius:8px;font-size:11pt;font-family:Arial,sans-serif;font-weight:bold;font-style:italic;">
           </div>
         </div>
       </div>
