@@ -160,7 +160,29 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Micros
       </div>
 
       <div class="section">
-        <h2 class="section-title">⚙️ 第三步：发票号</h2>
+        <h2 class="section-title">🏢 第三步：抬头（可选，浏览器记住，下次免传）</h2>
+        <div class="uploads cols-2">
+          <div class="stamp-card" id="card-logo">
+            <label for="logo">
+              <div class="label-title">公司 Logo (PNG)</div>
+              <div class="preview" id="preview-logo"><span class="placeholder">点击上传</span></div>
+            </label>
+            <input type="file" id="logo" name="logo" accept="image/png,image/jpeg">
+            <div class="stamp-actions"><a onclick="clearBrand('logo')">清除</a></div>
+          </div>
+          <div class="stamp-card" id="card-nameplate">
+            <label for="nameplate">
+              <div class="label-title">公司英文名 (PNG)</div>
+              <div class="preview" id="preview-nameplate"><span class="placeholder">点击上传</span></div>
+            </label>
+            <input type="file" id="nameplate" name="nameplate" accept="image/png,image/jpeg">
+            <div class="stamp-actions"><a onclick="clearBrand('nameplate')">清除</a></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2 class="section-title">⚙️ 第四步：发票号</h2>
         <div class="options">
           <label for="invoice_no">Invoice No.</label>
           <input type="text" id="invoice_no" name="invoice_no" value="{{ default_invoice_no }}">
@@ -189,7 +211,8 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Micros
 
 <script>
 const PDF_KEYS = ['pi','license','booking'];
-const STAMP_KEYS = ['sig','seal'];
+const STAMP_KEYS = ['sig','seal'];          // 必传, 影响 submit 状态
+const BRAND_KEYS = ['logo','nameplate'];    // 可选 (抬头), 不影响 submit 状态
 const LABELS = {
   invoice_no:'发票号', invoice_date:'发票日期',
   consignee_name:'收货人', consignee_addr:'收货人地址',
@@ -217,23 +240,23 @@ PDF_KEYS.forEach(k => {
   });
 });
 
-STAMP_KEYS.forEach(k => {
+// 通用: 印章 + 抬头 都用 localStorage 记住, 逻辑相同
+function _wireImageCard(k, storagePrefix) {
   const inp = document.getElementById(k);
   inp.addEventListener('change', () => {
     if (!inp.files.length) return;
-    const file = inp.files[0];
     const reader = new FileReader();
     reader.onload = e => {
-      localStorage.setItem('stamp_' + k, e.target.result);
-      renderStampPreview(k);
+      localStorage.setItem(storagePrefix + k, e.target.result);
+      _renderImagePreview(k, storagePrefix);
       updateSubmitState();
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(inp.files[0]);
   });
-});
+}
 
-function renderStampPreview(k) {
-  const data = localStorage.getItem('stamp_' + k);
+function _renderImagePreview(k, storagePrefix) {
+  const data = localStorage.getItem(storagePrefix + k);
   const preview = document.getElementById('preview-' + k);
   const card = document.getElementById('card-' + k);
   if (data) {
@@ -245,11 +268,24 @@ function renderStampPreview(k) {
   }
 }
 
+STAMP_KEYS.forEach(k => _wireImageCard(k, 'stamp_'));
+BRAND_KEYS.forEach(k => _wireImageCard(k, 'brand_'));
+
+function renderStampPreview(k) { _renderImagePreview(k, 'stamp_'); }
+function renderBrandPreview(k) { _renderImagePreview(k, 'brand_'); }
+
 function clearStamp(k) {
   localStorage.removeItem('stamp_' + k);
   document.getElementById(k).value = '';
   renderStampPreview(k);
   updateSubmitState();
+}
+
+function clearBrand(k) {
+  localStorage.removeItem('brand_' + k);
+  document.getElementById(k).value = '';
+  renderBrandPreview(k);
+  // brand 是可选, 不影响 submit 状态
 }
 
 function updateSubmitState() {
@@ -273,12 +309,23 @@ function buildFormData() {
   const fd = new FormData();
   PDF_KEYS.forEach(k => fd.append(k, document.getElementById(k).files[0]));
   fd.append('invoice_no', document.getElementById('invoice_no').value);
+  // 印章 (必传) — 必走 localStorage 或本次上传
   STAMP_KEYS.forEach(k => {
     const inp = document.getElementById(k);
     if (inp.files.length) {
       fd.append(k, inp.files[0]);
     } else {
       const data = localStorage.getItem('stamp_' + k);
+      if (data) fd.append(k, dataUrlToBlob(data), k + '.png');
+    }
+  });
+  // 抬头 (可选) — 有就附上, 没有就跳过
+  BRAND_KEYS.forEach(k => {
+    const inp = document.getElementById(k);
+    if (inp.files.length) {
+      fd.append(k, inp.files[0]);
+    } else {
+      const data = localStorage.getItem('brand_' + k);
       if (data) fd.append(k, dataUrlToBlob(data), k + '.png');
     }
   });
@@ -367,6 +414,7 @@ async function downloadPDF() {
 // ============ 初始化 ============
 window.addEventListener('DOMContentLoaded', () => {
   STAMP_KEYS.forEach(renderStampPreview);
+  BRAND_KEYS.forEach(renderBrandPreview);
   updateSubmitState();
 });
 </script>
@@ -376,7 +424,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
 
 def _save_uploads(req) -> tuple:
-    """保存所有上传文件 (3 个 PDF + 2 个印章) 到临时目录"""
+    """保存所有上传文件到临时目录.
+
+    必传: 3 个 PDF (pi/license/booking) + 2 个印章 (sig/seal)
+    可选: 2 个抬头 (logo/nameplate)
+    """
     tmp = Path(tempfile.mkdtemp(prefix="invoice_"))
     paths = {}
     # 必传
@@ -388,6 +440,13 @@ def _save_uploads(req) -> tuple:
         out = tmp / f"{key}{ext}"
         f.save(out)
         paths[key] = out
+    # 可选 (抬头: 公司 logo + 公司英文名图)
+    for key in ("logo", "nameplate"):
+        f = req.files.get(key)
+        if f and f.filename:
+            out = tmp / f"{key}.png"
+            f.save(out)
+            paths[key] = out
     return tmp, paths
 
 
@@ -434,7 +493,11 @@ def generate():
         data = extract_data(paths["pi"], paths["license"], paths["booking"], invoice_no=invoice_no)
         today = datetime.now().strftime("%Y%m%d")
         out_pdf = tmp / f"商业发票_{invoice_no}_修改于{today}.pdf"
-        render_pdf(data, paths["sig"], paths["seal"], out_pdf)
+        render_pdf(
+            data, paths["sig"], paths["seal"], out_pdf,
+            logo_path=paths.get("logo"),
+            nameplate_path=paths.get("nameplate"),
+        )
         # 注意: send_file 在请求结束前不能删 tmp, 用 after_this_request 延迟删除
         from flask import after_this_request
         @after_this_request

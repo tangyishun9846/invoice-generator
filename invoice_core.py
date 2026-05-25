@@ -309,7 +309,8 @@ def num_to_words(n) -> str:
 
 # ============== HTML 模板 ==============
 
-def build_html(d: dict, sig_b64: str, seal_b64: str) -> str:
+def build_html(d: dict, sig_b64: str, seal_b64: str,
+               logo_b64: str = "", nameplate_b64: str = "") -> str:
     qty_mt = d["quantity_mt"]
     price = float(d["unit_price"])
     total = qty_mt * price
@@ -326,6 +327,20 @@ def build_html(d: dict, sig_b64: str, seal_b64: str) -> str:
     fallback_country = DEFAULT_DISCHARGE_COUNTRY or "COUNTRY"
     discharge_country = d['port_discharge'].split(',')[-1].strip() if ',' in d['port_discharge'] else fallback_country
     seller_addr_html = "".join(f'<div class="addr">{l}</div>' for l in SELLER_ADDRESS_LINES)
+
+    # 抬头: 左 logo + 右 公司英文名 (两者都可选; 都没传则不渲染整个抬头)
+    header_html = ""
+    if logo_b64 or nameplate_b64:
+        logo_img = (f'<img src="data:image/png;base64,{logo_b64}" alt="logo">'
+                    if logo_b64 else '')
+        name_img = (f'<img src="data:image/png;base64,{nameplate_b64}" alt="company name">'
+                    if nameplate_b64 else '')
+        header_html = (
+            '<table class="brand-header"><tr>'
+            f'<td class="brand-logo">{logo_img}</td>'
+            f'<td class="brand-name">{name_img}</td>'
+            '</tr></table>\n'
+        )
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Commercial Invoice</title>
@@ -365,9 +380,15 @@ table.goods tr.other td {{ border:1px solid #bfbfbf; padding:6px 8px; font-size:
 .stamp-area {{ position:relative; width:100%; height:160px; }}
 .stamp-seal {{ position:absolute; right:20px; top:5px; width:240px; }}
 .stamp-sig {{ position:absolute; right:90px; top:90px; width:95px; }}
+table.brand-header {{ width:100%; border-collapse:collapse; margin-bottom:10px; }}
+table.brand-header td {{ padding:0; vertical-align:middle; border:none; }}
+.brand-logo {{ width:35%; text-align:left; }}
+.brand-logo img {{ max-height:70px; max-width:220px; }}
+.brand-name {{ width:65%; text-align:right; }}
+.brand-name img {{ max-height:60px; max-width:520px; }}
 </style></head><body>
 
-<div class="title-en">COMMERCIAL INVOICE</div>
+{header_html}<div class="title-en">COMMERCIAL INVOICE</div>
 <div class="title-cn">商 业 发 票</div>
 <div class="original">(ORIGINAL)</div>
 
@@ -502,11 +523,18 @@ def extract_data(pi_path: Path, license_path: Path, booking_path: Path,
     }
 
 
-def render_pdf(data: dict, sig_path: Path, seal_path: Path, out_pdf: Path) -> Path:
-    """渲染数据成 PDF, 返回输出路径"""
+def render_pdf(data: dict, sig_path: Path, seal_path: Path, out_pdf: Path,
+               logo_path: Path = None, nameplate_path: Path = None) -> Path:
+    """渲染数据成 PDF, 返回输出路径.
+
+    logo_path 和 nameplate_path 都是可选, 分别对应抬头左侧的公司 Logo
+    和右侧的公司英文名图. 都不传时不渲染抬头 (保持向后兼容).
+    """
     sig_b64 = base64.b64encode(sig_path.read_bytes()).decode()
     seal_b64 = base64.b64encode(seal_path.read_bytes()).decode()
-    html = build_html(data, sig_b64, seal_b64)
+    logo_b64 = base64.b64encode(logo_path.read_bytes()).decode() if logo_path else ""
+    nameplate_b64 = base64.b64encode(nameplate_path.read_bytes()).decode() if nameplate_path else ""
+    html = build_html(data, sig_b64, seal_b64, logo_b64, nameplate_b64)
 
     html_path = out_pdf.parent / f".{out_pdf.stem}_temp.html"
     html_path.write_text(html, encoding="utf-8")

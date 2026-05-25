@@ -9,10 +9,14 @@
     python3 auto_invoice.py                    # 扫描当前目录
     python3 auto_invoice.py /path/to/folder    # 扫描指定目录
 
-印章路径 (按优先级):
+印章路径 (按优先级, 必传):
     1. 环境变量 SIGNATURE_PATH / SEAL_PATH (绝对路径)
     2. 扫描目录下的 signature.png / seal.png
     3. 兼容旧文件名: 安然签名章.png / 公司名称章.png
+
+抬头路径 (可选, 找不到就不渲染抬头):
+    1. 环境变量 LOGO_PATH / NAMEPLATE_PATH
+    2. 扫描目录下的 logo.png / nameplate.png
 
 依赖: pymupdf, Chrome (本地路径自动探测)
 """
@@ -33,7 +37,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 
 
 def _resolve_stamp(folder: Path, env_var: str, default_names: list) -> Path:
-    """按优先级查找印章: env var -> folder 下的候选文件名"""
+    """按优先级查找印章: env var -> folder 下的候选文件名 (必传, 找不到退出)"""
     env_path = os.environ.get(env_var)
     if env_path:
         p = Path(env_path).expanduser().resolve()
@@ -48,6 +52,19 @@ def _resolve_stamp(folder: Path, env_var: str, default_names: list) -> Path:
         f"❌ 找不到印章, 请设置环境变量 {env_var} 或把文件放到 {folder}\n"
         f"   候选文件名: {', '.join(default_names)}"
     )
+
+
+def _resolve_optional(folder: Path, env_var: str, default_names: list):
+    """按优先级查找可选图 (抬头 logo/nameplate): env var -> folder 候选名 -> None"""
+    env_path = os.environ.get(env_var)
+    if env_path:
+        p = Path(env_path).expanduser().resolve()
+        return p if p.exists() else None
+    for name in default_names:
+        candidate = folder / name
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def main():
@@ -80,11 +97,20 @@ def main():
                                ["signature.png", "sig.png", "安然签名章.png"])
     seal_path = _resolve_stamp(folder, "SEAL_PATH",
                                 ["seal.png", "company_seal.png", "公司名称章.png"])
+    # 可选: 抬头 (找不到就跳过, 不生成抬头)
+    logo_path = _resolve_optional(folder, "LOGO_PATH",
+                                   ["logo.png", "company_logo.png"])
+    nameplate_path = _resolve_optional(folder, "NAMEPLATE_PATH",
+                                        ["nameplate.png", "company_name.png"])
+    if logo_path or nameplate_path:
+        print(f"  抬头: logo={'有' if logo_path else '无'}, "
+              f"公司英文名={'有' if nameplate_path else '无'}")
 
     today = datetime.now().strftime("%Y%m%d")
     out_pdf = folder / f"商业发票_{invoice_no}_修改于{today}.pdf"
     print(f"\n🖨️  生成 PDF: {out_pdf.name}")
-    render_pdf(data, sig_path, seal_path, out_pdf)
+    render_pdf(data, sig_path, seal_path, out_pdf,
+               logo_path=logo_path, nameplate_path=nameplate_path)
     print(f"✅ 完成: {out_pdf}")
 
 
