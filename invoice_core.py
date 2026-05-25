@@ -383,9 +383,9 @@ table.goods tr.other td {{ border:1px solid #bfbfbf; padding:6px 8px; font-size:
 .stamp-seal {{ position:absolute; right:20px; top:5px; width:240px; }}
 .stamp-sig {{ position:absolute; right:90px; top:90px; width:95px; }}
 table.brand-header {{ width:100%; border-collapse:collapse; margin-bottom:10px; }}
-table.brand-header td {{ padding:0 0 8px 0; vertical-align:middle; border:none; border-bottom:3px double #000; }}
+table.brand-header td {{ padding:0 0 4px 0; vertical-align:bottom; border:none; border-bottom:3px double #000; line-height:1; }}
 .brand-logo {{ width:35%; text-align:left; }}
-.brand-logo img {{ max-height:70px; max-width:220px; }}
+.brand-logo img {{ max-height:70px; max-width:220px; vertical-align:bottom; }}
 .brand-name {{ width:65%; text-align:right; font-family:Arial,"Helvetica Neue",Helvetica,sans-serif; font-size:13pt; font-weight:bold; font-style:italic; color:#000; }}
 </style></head><body>
 
