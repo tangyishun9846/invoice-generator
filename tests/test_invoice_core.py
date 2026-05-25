@@ -201,6 +201,82 @@ class TestParsePI(unittest.TestCase):
         d = parse_pi(text)
         self.assertEqual(d.get("hs_code"), "1234.5678")
 
+    def test_to_label_priority_over_anchor_fallback(self):
+        """回归: PI 模板里 PI No / PI Date 元数据夹在 From 块和 To: 之间时,
+        必须用 To: 标签精确定位收货人, 而不是简单跳过 SELLER_ANCHOR.
+        (旧 bug: 把 'PI No.:' 当成了收货人名)"""
+        text = (
+            "From:\n"
+            "MY COMPANY\n"
+            "MY CITY, COUNTRY\n"     # 这是 SELLER_ANCHOR
+            "PI No.:\n"
+            "PI-001\n"
+            "PI Date:\n"
+            "Apr,23,2026\n"
+            "To:\n"
+            "BUYER NAME (PVT) LTD.\n"
+            "ADDR LINE 1, ZONE,\n"
+            "POSTAL, CITY,\n"
+            "COUNTRY\n"
+            "INCOTERMS: CFR PORT"
+        )
+        d = parse_pi(text)
+        self.assertEqual(d.get("consignee_name_pi"), "BUYER NAME (PVT) LTD.")
+        addr = d.get("consignee_addr", "")
+        self.assertIn("ADDR LINE 1", addr)
+        self.assertIn("POSTAL, CITY", addr)
+        self.assertIn("COUNTRY", addr)
+        # 不应包含 PI 元数据
+        self.assertNotIn("PI No", addr)
+        self.assertNotIn("PI-001", addr)
+
+    def test_to_label_with_jumbled_pdf_text_order(self):
+        """回归: 某些 PI 模板 PDF 提取后顺序混乱, From/To 标签挨着, 然后才是地址块.
+        需要识别 To 后面的 block 里若含 SELLER_ANCHOR, 真正的收货人在 anchor 之后."""
+        import invoice_core
+        original_anchor = invoice_core.SELLER_ANCHOR
+        invoice_core.SELLER_ANCHOR = "MY CITY, COUNTRY"
+        try:
+            text = (
+                "From:\n"
+                "To:\n"
+                "MY COMPANY\n"
+                "MY ADDRESS LINE 1,\n"
+                "MY CITY, COUNTRY\n"   # SELLER_ANCHOR — 真正收货人在它之后
+                "BUYER CORP\n"
+                "BUYER ADDR LINE 1,\n"
+                "BUYER CITY, BUYER COUNTRY\n"
+                "INCOTERMS: CFR PORT"
+            )
+            d = parse_pi(text, consignee_hint="BUYER CORP")
+            addr = d.get("consignee_addr", "")
+            self.assertIn("BUYER ADDR LINE 1", addr)
+            self.assertIn("BUYER CITY", addr)
+            self.assertNotIn("MY ADDRESS", addr)
+            self.assertNotIn("MY COMPANY", addr)
+        finally:
+            invoice_core.SELLER_ANCHOR = original_anchor
+
+    def test_filters_metadata_lines_from_address(self):
+        """NTN/TAX ID/TEL/FAX/EMAIL 等元数据行应从地址中过滤掉."""
+        text = (
+            "To:\n"
+            "BUYER LTD\n"
+            "STREET 1, CITY,\n"
+            "COUNTRY\n"
+            "NTN NO.: 1234567-8\n"
+            "TEL: +92-21-1234567\n"
+            "EMAIL: x@y.com\n"
+            "INCOTERMS: CFR PORT"
+        )
+        d = parse_pi(text)
+        addr = d.get("consignee_addr", "")
+        self.assertIn("STREET 1", addr)
+        self.assertIn("COUNTRY", addr)
+        self.assertNotIn("NTN", addr)
+        self.assertNotIn("TEL", addr)
+        self.assertNotIn("EMAIL", addr)
+
 
 if __name__ == "__main__":
     unittest.main()

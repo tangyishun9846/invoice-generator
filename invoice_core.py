@@ -41,9 +41,24 @@ DEFAULT_PORT_DISCHARGE = os.environ.get("DEFAULT_PORT_DISCHARGE", "")
 DEFAULT_DISCHARGE_COUNTRY = os.environ.get("DEFAULT_DISCHARGE_COUNTRY", "")
 
 # 可选: PI 里货物名识别正则, 用户可针对自己常用货物定制
+# 默认匹配硫化钠片, 允许 SULPHIDE 和 FLAKES 之间有可选修饰词 (如 YELLOW/RED)
 GOODS_NAME_PATTERN = os.environ.get(
     "GOODS_NAME_PATTERN",
-    r"(SODIUM\s+SULPHIDE\s+FLAKES[^\n]*)"  # 兼容旧版默认; 可改成你的货物
+    r"(SODIUM\s+SULPHIDE(?:\s+[A-Z]+)?\s+FLAKES[^\n]*)"
+)
+
+# 收货人块提取相关正则 (模块级编译, 复用)
+# 明显是元数据 / 非地址的行 (NTN, TAX ID, TEL, FAX, EMAIL 等)
+_NON_ADDRESS_LINE_RE = re.compile(
+    r"^(NTN\s*NO|TAX\s*ID|TEL\s*[:：]|FAX\s*[:：]|EMAIL|PHONE|MOBILE|CONTACT|WEB|WWW|HTTP|ATTN)",
+    re.IGNORECASE,
+)
+# 收货人块结束的关键词 (在这些之前截断)
+_CONSIGNEE_BLOCK_END_RE = re.compile(
+    r"\b(INCOTERMS|TERMS\s*[:：]|PAYMENT|PACKING|SHIPMENT|"
+    r"Name\s+of\s+Commodity|Description\s+of\s+goods|\(1\)|"
+    r"H\.S\.\s*CODE|Total\s+Amount|Quantity\s*\n)",
+    re.IGNORECASE,
 )
 
 
@@ -98,6 +113,59 @@ def pdf_text(path: Path) -> str:
 
 # ============== 数据提取 ==============
 
+def _extract_consignee_block(text: str, consignee_hint: str = "") -> list:
+    """从 PI 全文中提取收货人块, 返回清洗后的行列表.
+
+    三层策略, 任一成功即返回 (优先级从高到低):
+      1. PI 里明确的 "To:" 标签 — 最可靠, 几乎所有 PI 模板都有
+      2. consignee_hint (从许可证拿到的公司名) 作为锚点
+      3. SELLER_ANCHOR (发货人地址末尾) 跳过 From 块作兜底
+
+    返回的行列表里, 第一行通常是收货人公司名, 后续是地址.
+    元数据行 (NTN/TAX/TEL/FAX 等) 已被过滤掉.
+    """
+    candidates = []
+
+    # 策略 1: 找 "To:" 标签 (锚定最稳)
+    if to_match := re.search(r"^\s*To\s*[:：]\s*(.*)$", text, re.MULTILINE):
+        same_line = to_match.group(1).strip()
+        rest = text[to_match.end():]
+        cut = _CONSIGNEE_BLOCK_END_RE.search(rest)
+        block = rest[:cut.start()] if cut else rest[:500]
+        if same_line:
+            block = same_line + "\n" + block
+        # 某些 PI 模板里 PDF 提取顺序混乱, From 块和 To 块挨着出现.
+        # 如果 block 里含 SELLER_ANCHOR (发货人地址末尾), 真正的收货人在 anchor 之后.
+        if SELLER_ANCHOR and SELLER_ANCHOR in block:
+            anchor_end = block.rfind(SELLER_ANCHOR) + len(SELLER_ANCHOR)
+            block = block[anchor_end:]
+        candidates.append(block)
+
+    # 策略 2: 用 consignee_hint 定位
+    if consignee_hint:
+        idx = text.find(consignee_hint)
+        if idx >= 0:
+            after = text[idx:]
+            cut = _CONSIGNEE_BLOCK_END_RE.search(after)
+            block = after[:cut.start()] if cut else after[:500]
+            candidates.append(block)
+
+    # 策略 3: SELLER_ANCHOR 跳过 From 块 (兜底)
+    if "INCOTERMS" in text and SELLER_ANCHOR:
+        before_inco = text[:text.find("INCOTERMS")]
+        sender_end = before_inco.rfind(SELLER_ANCHOR)
+        if sender_end >= 0:
+            candidates.append(before_inco[sender_end + len(SELLER_ANCHOR):])
+
+    # 取第一个非空候选并清洗
+    for block in candidates:
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        lines = [l for l in lines if not _NON_ADDRESS_LINE_RE.match(l)]
+        if lines:
+            return lines
+    return []
+
+
 def parse_pi(text: str, consignee_hint: str = "") -> dict:
     d = {}
     if m := re.search(r"PI\s*No\.?\s*:?\s*(\S+)", text):
@@ -105,41 +173,19 @@ def parse_pi(text: str, consignee_hint: str = "") -> dict:
     if m := re.search(r"PI\s*Date\s*:?\s*([A-Z][a-z]+,\s*\d{1,2},\s*\d{4})", text):
         d["pi_date"] = m.group(1).replace(" ", "").upper()
 
-    # ---- 提取收货人块 (PI 内): 优先用 consignee_hint 定位, 否则用通用规则 ----
-    block = ""
-    if consignee_hint:
-        idx = text.find(consignee_hint)
-        if idx >= 0:
-            after = text[idx:]  # 包含 hint 行本身
-            cut = after.find("INCOTERMS")
-            block = after[:cut] if cut > 0 else after[:500]
-
-    if not block:
-        # 通用回退: 找 "To:" 和 "INCOTERMS" 之间的内容, 跳过发货人 (anchor 之后)
-        if "INCOTERMS" in text:
-            before_inco = text[:text.find("INCOTERMS")]
-            # 用 SELLER_ANCHOR (默认你公司地址末尾) 作为发货人段结束的标志
-            sender_end = before_inco.rfind(SELLER_ANCHOR) if SELLER_ANCHOR else -1
-            if sender_end >= 0:
-                block = before_inco[sender_end + len(SELLER_ANCHOR):]
-            else:
-                # 退一步: 用 To: 作为起点
-                to_pos = before_inco.find("To:")
-                if to_pos >= 0:
-                    block = before_inco[to_pos + 3:]
-
-    if block:
-        lines = [l.strip() for l in block.split("\n") if l.strip()]
-        # 第一行是收货人名 (如果当时是用 hint 定位的, 它就是 hint 本身)
-        # 后续 2-3 行是地址
-        if lines:
-            if not consignee_hint:
-                # 通用模式: 第一行就是公司名
-                d["consignee_name_pi"] = lines[0]
-                d["consignee_addr"] = "\n".join(lines[1:4])
-            else:
-                # hint 模式: 第一行是 hint (已知公司名), 后续是地址
-                d["consignee_addr"] = "\n".join(lines[1:4])
+    # ---- 提取收货人块 ----
+    block_lines = _extract_consignee_block(text, consignee_hint)
+    if block_lines:
+        # 判断第一行是不是公司名 (如果跟 hint 前缀匹配则跳过它)
+        if consignee_hint and block_lines[0].upper().startswith(consignee_hint[:8].upper()):
+            d["consignee_addr"] = "\n".join(block_lines[1:5])
+        elif consignee_hint:
+            # hint 模式但第一行不像公司名 — 安全起见, 整块当地址
+            d["consignee_addr"] = "\n".join(block_lines[:4])
+        else:
+            # 无 hint: 第一行是公司名, 后续是地址
+            d["consignee_name_pi"] = block_lines[0]
+            d["consignee_addr"] = "\n".join(block_lines[1:5])
 
     if m := re.search(r"USD\s*([\d,]+(?:\.\d+)?)\s*/\s*([A-Z]+)", text):
         d["unit_price"] = m.group(1).replace(",", "")
