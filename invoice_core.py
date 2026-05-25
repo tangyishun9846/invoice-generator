@@ -310,7 +310,7 @@ def num_to_words(n) -> str:
 # ============== HTML 模板 ==============
 
 def build_html(d: dict, sig_b64: str, seal_b64: str,
-               logo_b64: str = "", nameplate_b64: str = "") -> str:
+               logo_b64: str = "", nameplate_text: str = "") -> str:
     qty_mt = d["quantity_mt"]
     price = float(d["unit_price"])
     total = qty_mt * price
@@ -328,17 +328,19 @@ def build_html(d: dict, sig_b64: str, seal_b64: str,
     discharge_country = d['port_discharge'].split(',')[-1].strip() if ',' in d['port_discharge'] else fallback_country
     seller_addr_html = "".join(f'<div class="addr">{l}</div>' for l in SELLER_ADDRESS_LINES)
 
-    # 抬头: 左 logo + 右 公司英文名 (两者都可选; 都没传则不渲染整个抬头)
+    # 抬头: 左 logo (图片) + 右 公司英文名 (文本)
+    # 两者都没传则不渲染整个抬头
     header_html = ""
-    if logo_b64 or nameplate_b64:
+    if logo_b64 or nameplate_text:
         logo_img = (f'<img src="data:image/png;base64,{logo_b64}" alt="logo">'
                     if logo_b64 else '')
-        name_img = (f'<img src="data:image/png;base64,{nameplate_b64}" alt="company name">'
-                    if nameplate_b64 else '')
+        # HTML 转义防止用户输入破坏布局
+        from html import escape
+        name_text = escape(nameplate_text) if nameplate_text else ''
         header_html = (
             '<table class="brand-header"><tr>'
             f'<td class="brand-logo">{logo_img}</td>'
-            f'<td class="brand-name">{name_img}</td>'
+            f'<td class="brand-name">{name_text}</td>'
             '</tr></table>\n'
         )
 
@@ -384,8 +386,7 @@ table.brand-header {{ width:100%; border-collapse:collapse; margin-bottom:10px; 
 table.brand-header td {{ padding:0; vertical-align:middle; border:none; }}
 .brand-logo {{ width:35%; text-align:left; }}
 .brand-logo img {{ max-height:70px; max-width:220px; }}
-.brand-name {{ width:65%; text-align:right; }}
-.brand-name img {{ max-height:60px; max-width:520px; }}
+.brand-name {{ width:65%; text-align:right; font-family:"Times New Roman","Songti SC",serif; font-size:15pt; font-weight:bold; letter-spacing:0.5px; color:#000; }}
 </style></head><body>
 
 {header_html}<div class="title-en">COMMERCIAL INVOICE</div>
@@ -524,17 +525,18 @@ def extract_data(pi_path: Path, license_path: Path, booking_path: Path,
 
 
 def render_pdf(data: dict, sig_path: Path, seal_path: Path, out_pdf: Path,
-               logo_path: Path = None, nameplate_path: Path = None) -> Path:
+               logo_path: Path = None, nameplate_text: str = "") -> Path:
     """渲染数据成 PDF, 返回输出路径.
 
-    logo_path 和 nameplate_path 都是可选, 分别对应抬头左侧的公司 Logo
-    和右侧的公司英文名图. 都不传时不渲染抬头 (保持向后兼容).
+    抬头是可选:
+      - logo_path: 抬头左侧的公司 Logo 图片 (PNG/JPG)
+      - nameplate_text: 抬头右侧的公司英文名 (纯文本)
+    都不传时不渲染抬头 (保持向后兼容).
     """
     sig_b64 = base64.b64encode(sig_path.read_bytes()).decode()
     seal_b64 = base64.b64encode(seal_path.read_bytes()).decode()
     logo_b64 = base64.b64encode(logo_path.read_bytes()).decode() if logo_path else ""
-    nameplate_b64 = base64.b64encode(nameplate_path.read_bytes()).decode() if nameplate_path else ""
-    html = build_html(data, sig_b64, seal_b64, logo_b64, nameplate_b64)
+    html = build_html(data, sig_b64, seal_b64, logo_b64, nameplate_text)
 
     html_path = out_pdf.parent / f".{out_pdf.stem}_temp.html"
     html_path.write_text(html, encoding="utf-8")

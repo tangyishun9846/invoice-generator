@@ -14,9 +14,9 @@
     2. 扫描目录下的 signature.png / seal.png
     3. 兼容旧文件名: 安然签名章.png / 公司名称章.png
 
-抬头路径 (可选, 找不到就不渲染抬头):
-    1. 环境变量 LOGO_PATH / NAMEPLATE_PATH
-    2. 扫描目录下的 logo.png / nameplate.png
+抬头 (都可选, 都不设则不渲染抬头):
+    - 公司 Logo 图: 环境变量 LOGO_PATH, 或目录下的 logo.png / company_logo.png
+    - 公司英文名 (文本): 环境变量 NAMEPLATE_TEXT, 缺省时用 SELLER_NAME
 
 依赖: pymupdf, Chrome (本地路径自动探测)
 """
@@ -30,6 +30,7 @@ from invoice_core import (
     extract_data,
     render_pdf,
     DEFAULT_INVOICE_NO,
+    SELLER_NAME,
 )
 
 
@@ -97,20 +98,20 @@ def main():
                                ["signature.png", "sig.png", "安然签名章.png"])
     seal_path = _resolve_stamp(folder, "SEAL_PATH",
                                 ["seal.png", "company_seal.png", "公司名称章.png"])
-    # 可选: 抬头 (找不到就跳过, 不生成抬头)
+    # 可选: 抬头 (找不到就跳过)
     logo_path = _resolve_optional(folder, "LOGO_PATH",
                                    ["logo.png", "company_logo.png"])
-    nameplate_path = _resolve_optional(folder, "NAMEPLATE_PATH",
-                                        ["nameplate.png", "company_name.png"])
-    if logo_path or nameplate_path:
+    # 抬头文本: 优先 NAMEPLATE_TEXT, 否则用 SELLER_NAME (注意: 若都为空则不渲染抬头)
+    nameplate_text = os.environ.get("NAMEPLATE_TEXT") or SELLER_NAME or ""
+    if logo_path or nameplate_text:
         print(f"  抬头: logo={'有' if logo_path else '无'}, "
-              f"公司英文名={'有' if nameplate_path else '无'}")
+              f"公司英文名='{nameplate_text or '(无)'}'")
 
     today = datetime.now().strftime("%Y%m%d")
     out_pdf = folder / f"商业发票_{invoice_no}_修改于{today}.pdf"
     print(f"\n🖨️  生成 PDF: {out_pdf.name}")
     render_pdf(data, sig_path, seal_path, out_pdf,
-               logo_path=logo_path, nameplate_path=nameplate_path)
+               logo_path=logo_path, nameplate_text=nameplate_text)
     print(f"✅ 完成: {out_pdf}")
 
 

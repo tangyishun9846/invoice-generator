@@ -17,7 +17,7 @@ from datetime import datetime
 
 from flask import Flask, request, send_file, render_template_string, jsonify
 
-from invoice_core import extract_data, render_pdf, DEFAULT_INVOICE_NO
+from invoice_core import extract_data, render_pdf, DEFAULT_INVOICE_NO, SELLER_NAME
 
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -170,13 +170,14 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Micros
             <input type="file" id="logo" name="logo" accept="image/png,image/jpeg">
             <div class="stamp-actions"><a onclick="clearBrand('logo')">清除</a></div>
           </div>
-          <div class="stamp-card" id="card-nameplate">
-            <label for="nameplate">
-              <div class="label-title">公司英文名 (PNG)</div>
-              <div class="preview" id="preview-nameplate"><span class="placeholder">点击上传</span></div>
+          <div class="options" style="background:#f7fafc;border-radius:10px;padding:14px;">
+            <label for="nameplate_text" style="display:block;font-size:10pt;color:#4a5568;margin-bottom:6px;font-weight:600;">
+              公司英文名（显示在抬头右侧）
             </label>
-            <input type="file" id="nameplate" name="nameplate" accept="image/png,image/jpeg">
-            <div class="stamp-actions"><a onclick="clearBrand('nameplate')">清除</a></div>
+            <input type="text" id="nameplate_text" name="nameplate_text"
+                   placeholder="留空则不显示"
+                   value="{{ default_nameplate }}"
+                   style="width:100%;padding:9px 12px;border:1px solid #cbd5e0;border-radius:8px;font-size:11pt;font-family:'Times New Roman',serif;font-weight:bold;">
           </div>
         </div>
       </div>
@@ -211,8 +212,9 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Micros
 
 <script>
 const PDF_KEYS = ['pi','license','booking'];
-const STAMP_KEYS = ['sig','seal'];          // 必传, 影响 submit 状态
-const BRAND_KEYS = ['logo','nameplate'];    // 可选 (抬头), 不影响 submit 状态
+const STAMP_KEYS = ['sig','seal'];   // 必传, 影响 submit 状态
+const BRAND_KEYS = ['logo'];         // 抬头 logo (可选, 图片)
+// 公司英文名是文本输入, 走 localStorage key: brand_nameplate_text
 const LABELS = {
   invoice_no:'发票号', invoice_date:'发票日期',
   consignee_name:'收货人', consignee_addr:'收货人地址',
@@ -319,7 +321,7 @@ function buildFormData() {
       if (data) fd.append(k, dataUrlToBlob(data), k + '.png');
     }
   });
-  // 抬头 (可选) — 有就附上, 没有就跳过
+  // 抬头图 (可选 logo) — 有就附上, 没有就跳过
   BRAND_KEYS.forEach(k => {
     const inp = document.getElementById(k);
     if (inp.files.length) {
@@ -329,6 +331,8 @@ function buildFormData() {
       if (data) fd.append(k, dataUrlToBlob(data), k + '.png');
     }
   });
+  // 抬头文本 (公司英文名) — 总是发, 后端按需用
+  fd.append('nameplate_text', document.getElementById('nameplate_text').value);
   return fd;
 }
 
@@ -411,6 +415,14 @@ async function downloadPDF() {
   }
 }
 
+// 公司英文名输入: 用 localStorage 记住用户改动 (优先于服务端默认)
+const nameplateInput = document.getElementById('nameplate_text');
+const savedNameplate = localStorage.getItem('brand_nameplate_text');
+if (savedNameplate !== null) nameplateInput.value = savedNameplate;
+nameplateInput.addEventListener('input', () => {
+  localStorage.setItem('brand_nameplate_text', nameplateInput.value);
+});
+
 // ============ 初始化 ============
 window.addEventListener('DOMContentLoaded', () => {
   STAMP_KEYS.forEach(renderStampPreview);
@@ -427,7 +439,7 @@ def _save_uploads(req) -> tuple:
     """保存所有上传文件到临时目录.
 
     必传: 3 个 PDF (pi/license/booking) + 2 个印章 (sig/seal)
-    可选: 2 个抬头 (logo/nameplate)
+    可选: 1 个抬头 logo 图 (公司英文名是文本字段, 不存为文件)
     """
     tmp = Path(tempfile.mkdtemp(prefix="invoice_"))
     paths = {}
@@ -440,13 +452,12 @@ def _save_uploads(req) -> tuple:
         out = tmp / f"{key}{ext}"
         f.save(out)
         paths[key] = out
-    # 可选 (抬头: 公司 logo + 公司英文名图)
-    for key in ("logo", "nameplate"):
-        f = req.files.get(key)
-        if f and f.filename:
-            out = tmp / f"{key}.png"
-            f.save(out)
-            paths[key] = out
+    # 可选: 抬头 logo
+    f = req.files.get("logo")
+    if f and f.filename:
+        out = tmp / "logo.png"
+        f.save(out)
+        paths["logo"] = out
     return tmp, paths
 
 
@@ -460,7 +471,11 @@ def _cleanup(tmp_dir: Path):
 
 @app.route("/")
 def index():
-    return render_template_string(PAGE, default_invoice_no=DEFAULT_INVOICE_NO)
+    return render_template_string(
+        PAGE,
+        default_invoice_no=DEFAULT_INVOICE_NO,
+        default_nameplate=SELLER_NAME,
+    )
 
 
 @app.route("/extract", methods=["POST"])
@@ -493,10 +508,11 @@ def generate():
         data = extract_data(paths["pi"], paths["license"], paths["booking"], invoice_no=invoice_no)
         today = datetime.now().strftime("%Y%m%d")
         out_pdf = tmp / f"商业发票_{invoice_no}_修改于{today}.pdf"
+        nameplate_text = (request.form.get("nameplate_text") or "").strip()
         render_pdf(
             data, paths["sig"], paths["seal"], out_pdf,
             logo_path=paths.get("logo"),
-            nameplate_path=paths.get("nameplate"),
+            nameplate_text=nameplate_text,
         )
         # 注意: send_file 在请求结束前不能删 tmp, 用 after_this_request 延迟删除
         from flask import after_this_request
